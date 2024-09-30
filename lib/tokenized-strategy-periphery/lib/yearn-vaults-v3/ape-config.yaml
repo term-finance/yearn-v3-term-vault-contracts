@@ -1,0 +1,25 @@
+name: yearn-v3
+
+plugins:
+  - name: solidity
+  - name: vyper
+  - name: hardhat
+
+default_ecosystem: ethereum
+dependencies:
+  - name: openzeppelin
+    github: OpenZeppelin/openzeppelin-contracts
+    ref: 4.9.5
+  - name: tokenized-strategy
+    github: yearn/tokenized-strategy
+    ref: v3.0.2
+    contracts_folder: src
+
+solidity:
+  import_remapping:
+    - "@openzeppelin/contracts=openzeppelin/v4.9.5"
+    - "@tokenized-strategy=tokenized-strategy/v3.0.2"
+
+ethereum:
+  local:
+    default_provider: hardhat
