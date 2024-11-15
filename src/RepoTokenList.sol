@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity ^0.8.18;
 
+import {ITermController} from "./interfaces/term/ITermController.sol";
 import {ITermRepoToken} from "./interfaces/term/ITermRepoToken.sol";
 import {ITermRepoServicer} from "./interfaces/term/ITermRepoServicer.sol";
 import {ITermRepoCollateralManager} from "./interfaces/term/ITermRepoCollateralManager.sol";
@@ -25,8 +26,9 @@ struct RepoTokenListData {
 //////////////////////////////////////////////////////////////*/
 
 library RepoTokenList {
-    address public constant NULL_NODE = address(0);
+    address internal constant NULL_NODE = address(0);
     uint256 internal constant INVALID_AUCTION_RATE = 0;
+    uint256 internal constant ZERO_AUCTION_RATE = 1; //Set to lowest nonzero number so that it is not confused with INVALID_AUCTION_RATe but still calculates as if 0.
 
     error InvalidRepoToken(address token);
 
@@ -175,13 +177,17 @@ library RepoTokenList {
      * @param listData The list data
      * @param discountRateAdapter The discount rate adapter
      * @param purchaseTokenPrecision The precision of the purchase token
+     * @param prevTermController The previous term controller
+     * @param currTermController The current term controller
      * @return totalPresentValue The total present value of the repoTokens
      * @dev  Aggregates the present value of all repoTokens in the list. 
      */
     function getPresentValue(
         RepoTokenListData storage listData, 
         ITermDiscountRateAdapter discountRateAdapter,
-        uint256 purchaseTokenPrecision
+        uint256 purchaseTokenPrecision,
+        ITermController prevTermController,
+        ITermController currTermController
     ) internal view returns (uint256 totalPresentValue) {
         // If the list is empty, return 0
         if (listData.head == NULL_NODE) return 0;
@@ -243,7 +249,7 @@ library RepoTokenList {
         address prev = current;
         while (current != NULL_NODE) {
             address next;
-            if (getRepoTokenMaturity(current) < block.timestamp) {
+            if (getRepoTokenMaturity(current) <= block.timestamp) {
                 bool removeMaturedToken;
                 uint256 repoTokenBalance = ITermRepoToken(current).balanceOf(address(this));
 
@@ -288,6 +294,7 @@ library RepoTokenList {
      * @param listData The list data
      * @param repoToken The repoToken to validate
      * @param asset The address of the base asset
+     * @return isRepoTokenValid Whether the repoToken is valid
      * @return redemptionTimestamp The redemption timestamp of the validated repoToken 
      * 
      * @dev Ensures the repoToken is deployed, matches the purchase token, is not matured, and meets collateral requirements.
@@ -297,7 +304,7 @@ library RepoTokenList {
         RepoTokenListData storage listData,
         ITermRepoToken repoToken,
         address asset
-    ) internal view returns (uint256 redemptionTimestamp) {
+    ) internal view returns (bool isRepoTokenValid, uint256 redemptionTimestamp) {
         // Retrieve repo token configuration
         address purchaseToken;
         address collateralManager;
@@ -305,12 +312,12 @@ library RepoTokenList {
 
         // Validate purchase token
         if (purchaseToken != asset) {
-            revert InvalidRepoToken(address(repoToken));
+            return (false, redemptionTimestamp);
         }
 
         // Check if repo token has matured
         if (redemptionTimestamp < block.timestamp) {
-            revert InvalidRepoToken(address(repoToken));
+             return (false, redemptionTimestamp);
         }
 
         // Validate collateral token ratios
@@ -320,13 +327,14 @@ library RepoTokenList {
             uint256 minCollateralRatio = listData.collateralTokenParams[currentToken];
 
             if (minCollateralRatio == 0) {
-                revert InvalidRepoToken(address(repoToken));
+                 return (false, redemptionTimestamp);
             } else if (
                 ITermRepoCollateralManager(collateralManager).maintenanceCollateralRatios(currentToken) < minCollateralRatio
             ) {
-                revert InvalidRepoToken(address(repoToken));
+                 return (false, redemptionTimestamp);
             }
         }
+        return (true, redemptionTimestamp);
     }
 
     /**
@@ -335,6 +343,7 @@ library RepoTokenList {
      * @param repoToken The repoToken to validate and insert
      * @param discountRateAdapter The discount rate adapter
      * @param asset The address of the base asset
+     * @return validRepoToken Whether the repoToken is valid
      * @return discountRate The discount rate to be applied to the validated repoToken 
      * @return redemptionTimestamp The redemption timestamp of the validated repoToken     
      */
@@ -343,30 +352,46 @@ library RepoTokenList {
         ITermRepoToken repoToken,
         ITermDiscountRateAdapter discountRateAdapter,
         address asset
-    ) internal returns (uint256 discountRate, uint256 redemptionTimestamp) {
+    ) internal returns (bool validRepoToken, uint256 discountRate, uint256 redemptionTimestamp) {
         discountRate = listData.discountRates[address(repoToken)];
         if (discountRate != INVALID_AUCTION_RATE) {
             (redemptionTimestamp, , ,) = repoToken.config();
 
             // skip matured repoTokens
             if (redemptionTimestamp < block.timestamp) {
-                revert InvalidRepoToken(address(repoToken));
+                return (false, discountRate, redemptionTimestamp); //revert InvalidRepoToken(address(repoToken));
             }
 
-            uint256 oracleRate = discountRateAdapter.getDiscountRate(address(repoToken));
-            if (oracleRate != INVALID_AUCTION_RATE) {
+            uint256 oracleRate;
+            try discountRateAdapter.getDiscountRate(address(repoToken)) returns (uint256 rate) {
+                oracleRate = rate;
+            } catch {
+            }
+
+            if (oracleRate != 0) {
                 if (discountRate != oracleRate) {
                     listData.discountRates[address(repoToken)] = oracleRate;
                 }
             }
         } else {
-            discountRate = discountRateAdapter.getDiscountRate(address(repoToken));
+            try discountRateAdapter.getDiscountRate(address(repoToken)) returns (uint256 rate) {
+                discountRate = rate == 0 ? ZERO_AUCTION_RATE : rate;
+            } catch {
+                discountRate = INVALID_AUCTION_RATE;
+                return (false, discountRate, redemptionTimestamp);
+            }
 
-            redemptionTimestamp = validateRepoToken(listData, repoToken, asset);
+            bool isRepoTokenValid;
 
+            (isRepoTokenValid, redemptionTimestamp) = validateRepoToken(listData, repoToken, asset);
+            if (!isRepoTokenValid) {
+                return (false, discountRate, redemptionTimestamp);
+            }
             insertSorted(listData, address(repoToken));
             listData.discountRates[address(repoToken)] = discountRate;
         }
+
+        return (true, discountRate, redemptionTimestamp);
     }
 
     /**
@@ -384,8 +409,11 @@ library RepoTokenList {
         // If the list is empty, set the new repoToken as the head
         if (current == NULL_NODE) {
             listData.head = repoToken;
+            listData.nodes[repoToken].next = NULL_NODE;
             return;
         }
+
+        uint256 maturityToInsert = getRepoTokenMaturity(repoToken);
 
         address prev;
         while (current != NULL_NODE) {
@@ -396,10 +424,9 @@ library RepoTokenList {
             }
 
             uint256 currentMaturity = getRepoTokenMaturity(current);
-            uint256 maturityToInsert = getRepoTokenMaturity(repoToken);
 
             // Insert repoToken before current if its maturity is less than or equal
-            if (maturityToInsert <= currentMaturity) {
+            if (maturityToInsert < currentMaturity) {
                 if (prev == NULL_NODE) {
                     listData.head = repoToken;
                 } else {
@@ -415,6 +442,7 @@ library RepoTokenList {
             // If at the end of the list, insert repoToken after current
             if (next == NULL_NODE) {
                 listData.nodes[current].next = repoToken;
+                listData.nodes[repoToken].next = NULL_NODE;
                 break;
             }
 
