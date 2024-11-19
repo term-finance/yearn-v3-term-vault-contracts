@@ -12,6 +12,7 @@ import {Setup, ERC20, IStrategyInterface} from "./utils/Setup.sol";
 import {ITermRepoToken} from "../interfaces/term/ITermRepoToken.sol";
 import {RepoTokenList} from "../RepoTokenList.sol";
 import {Strategy} from "../Strategy.sol";
+import {ITermController} from "../interfaces/term/ITermController.sol";
 
 contract TestUSDCSellRepoToken is Setup {
 
@@ -45,7 +46,7 @@ contract TestUSDCSellRepoToken is Setup {
 
         termStrategy = Strategy(address(strategy));
 
-        vm.startPrank(management);
+        vm.startPrank(governor);
         termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
         termStrategy.setTimeToMaturityThreshold(10 weeks);
         termStrategy.setRepoTokenConcentrationLimit(1e18);
@@ -77,7 +78,7 @@ contract TestUSDCSellRepoToken is Setup {
 
         termController.setOracleRate(repoToken1Week.termRepoId(), 0.05e18);
 
-        vm.startPrank(management);
+        vm.startPrank(governor);
         termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
         termStrategy.setTimeToMaturityThreshold(3 weeks);
         vm.stopPrank();
@@ -88,6 +89,10 @@ contract TestUSDCSellRepoToken is Setup {
         uint256 expectedProceeds = termStrategy.calculateRepoTokenPresentValue(
             address(repoToken1Week), 0.05e18, repoTokenSellAmount
         );
+
+        uint256 repoTokenHoldingValue = termStrategy.getRepoTokenHoldingValue(address(repoToken1Week));
+
+        assertEq(repoTokenHoldingValue, expectedProceeds);
 
         assertEq(mockUSDC.balanceOf(testUser), expectedProceeds);
         assertEq(termStrategy.totalLiquidBalance(), initialState.totalLiquidBalance - expectedProceeds);
@@ -106,6 +111,86 @@ contract TestUSDCSellRepoToken is Setup {
             cumulativeWeightedTimeToMaturity / (repoTokenBalanceInBaseAssetPrecision + termStrategy.totalLiquidBalance());
 
   //      assertEq(weightedTimeToMaturity, expectedWeightedTimeToMaturity);
+    }
+
+    function testSellInvalidRepoToken() public {
+        // start with some initial funds
+        mockUSDC.mint(address(strategy), 100e6);
+        _initState();
+
+        uint256 repoTokenSellAmount = 1e18;
+
+        address testUser = vm.addr(0x11111);
+
+        repoToken1Week.mint(testUser, 1000e18);
+
+        vm.prank(testUser);
+        repoToken1Week.approve(address(strategy), type(uint256).max);
+
+        termController.setOracleRate(repoToken1Week.termRepoId(), 0.05e18);
+        termController.markNotTermDeployed(address(repoToken1Week));
+
+        vm.startPrank(governor);
+        termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
+        termStrategy.setTimeToMaturityThreshold(3 weeks);
+        vm.stopPrank();
+
+        vm.prank(testUser);
+        vm.expectRevert(abi.encodeWithSelector(RepoTokenList.InvalidRepoToken.selector, address(repoToken1Week)));
+        termStrategy.sellRepoToken(address(repoToken1Week), repoTokenSellAmount);
+    }
+
+    function testSellRepoTokenInvalidLiquidBalance() public {
+        // start with some initial funds
+        mockUSDC.mint(address(strategy), 5e6);
+        _initState();
+
+        uint256 repoTokenSellAmount = 5.1e18;
+
+        address testUser = vm.addr(0x11111);
+
+        repoToken1Week.mint(testUser, 1000e18);
+
+        vm.prank(testUser);
+        repoToken1Week.approve(address(strategy), type(uint256).max);
+
+        termController.setOracleRate(repoToken1Week.termRepoId(), 0.00001e18);
+
+        vm.startPrank(governor);
+        termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
+        termStrategy.setTimeToMaturityThreshold(3 weeks);
+        vm.stopPrank();
+
+        vm.prank(testUser);
+        vm.expectRevert(abi.encodeWithSelector(Strategy.InsufficientLiquidBalance.selector, 5e6, 5.1e6));
+        termStrategy.sellRepoToken(address(repoToken1Week), repoTokenSellAmount);
+    }
+
+    function testSellRepoTokenBalanceBelowRequireReserveRatio() public {
+        // start with some initial funds
+        mockUSDC.mint(address(strategy), 5e6);
+        _initState();
+
+        uint256 repoTokenSellAmount = 2.7e18;
+
+        address testUser = vm.addr(0x11111);
+
+        repoToken1Week.mint(testUser, 1000e18);
+
+        vm.prank(testUser);
+        repoToken1Week.approve(address(strategy), type(uint256).max);
+
+        termController.setOracleRate(repoToken1Week.termRepoId(), 0.05e18);
+
+        vm.startPrank(governor);
+        termStrategy.setRequiredReserveRatio(0.5e18);
+        termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
+        termStrategy.setTimeToMaturityThreshold(3 weeks);
+        vm.stopPrank();
+
+        vm.prank(testUser);
+        vm.expectRevert(abi.encodeWithSelector(Strategy.BalanceBelowRequiredReserveRatio.selector));
+        termStrategy.sellRepoToken(address(repoToken1Week), repoTokenSellAmount);
     }
 
     // Test with different precisions
@@ -319,50 +404,129 @@ contract TestUSDCSellRepoToken is Setup {
         assertEq(weightedTimeToMaturity, 1108800);
     }
 
-    function testSetGovernanceParameters() public {
+    function testSetTermController() public {
         MockTermController newController = new MockTermController();
 
-        vm.expectRevert("!management");
+        vm.expectRevert();
         termStrategy.setTermController(address(newController));
 
         vm.expectRevert();
-        vm.prank(management);
+        vm.prank(governor);
         termStrategy.setTermController(address(0));
 
-        address currentController = address(termStrategy.currTermController());
-        vm.prank(management);
+        (
+            ,
+            ,
+            ,
+            ITermController prevTermController,
+            ITermController currTermController,
+            ,
+            ,
+            ,
+            ,
+        ) = termStrategy.strategyState();
+
+        address currentController = address(currTermController);
+        vm.prank(governor);
         termStrategy.setTermController(address(newController));
-        assertEq(address(termStrategy.currTermController()), address(newController));
-        assertEq(address(termStrategy.prevTermController()), currentController);
-
-        vm.expectRevert("!management");
-        termStrategy.setTimeToMaturityThreshold(12345);
-
-        vm.prank(management);
-        termStrategy.setTimeToMaturityThreshold(12345);
-        assertEq(termStrategy.timeToMaturityThreshold(), 12345);
-
-        vm.expectRevert("!management");
-        termStrategy.setRequiredReserveRatio(12345);
-
-        vm.prank(management);
-        termStrategy.setRequiredReserveRatio(12345);
-        assertEq(termStrategy.requiredReserveRatio(), 12345);
-
-        vm.expectRevert("!management");
-        termStrategy.setDiscountRateMarkup(12345);
-
-        vm.prank(management);
-        termStrategy.setDiscountRateMarkup(12345);
-        assertEq(termStrategy.discountRateMarkup(), 12345);
-
-        vm.expectRevert("!management");
-        termStrategy.setCollateralTokenParams(address(mockCollateral), 12345);
-
-        vm.prank(management);
-        termStrategy.setCollateralTokenParams(address(mockCollateral), 12345);
-        assertEq(termStrategy.discountRateMarkup(), 12345);
+         (
+            ,
+            ,
+            ,
+            prevTermController,
+            currTermController,
+            ,
+            ,
+            ,
+            ,
+        ) = termStrategy.strategyState();
+        assertEq(address(currTermController), address(newController));
+        assertEq(address(prevTermController), currentController);
     }
+
+    function testSetTimeToMaturityThreshold() public {
+        vm.expectRevert();
+        termStrategy.setTimeToMaturityThreshold(12345);
+
+        vm.prank(governor);
+        termStrategy.setTimeToMaturityThreshold(12345);
+         (
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            uint256 timeToMaturityThreshold,
+            ,
+            ,
+        ) = termStrategy.strategyState();
+        assertEq(timeToMaturityThreshold, 12345);
+    }
+
+    function testSetRequiredReserveRatio() public {
+        vm.expectRevert();
+        termStrategy.setRequiredReserveRatio(12345);
+
+        vm.prank(governor);
+        termStrategy.setRequiredReserveRatio(12345);
+         (
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            uint256 requiredReserveRatio,
+            ,
+        ) = termStrategy.strategyState();
+        assertEq(requiredReserveRatio, 12345);
+    }
+
+    function testSetDiscountRateMarkup() public {
+        vm.expectRevert();
+        termStrategy.setDiscountRateMarkup(12345);
+
+        vm.prank(governor);
+        termStrategy.setDiscountRateMarkup(12345);
+        (
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            uint256 discountRateMarkup,
+        ) = termStrategy.strategyState();
+        assertEq(discountRateMarkup, 12345);
+    }
+
+    function testSetCollateralTokenParams() public {
+        vm.prank(governor);
+        termStrategy.setDiscountRateMarkup(12345);
+
+        vm.expectRevert();
+        termStrategy.setCollateralTokenParams(address(mockCollateral), 12345);
+
+        vm.prank(governor);
+        termStrategy.setCollateralTokenParams(address(mockCollateral), 12345);
+        (
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            ,
+            uint256 discountRateMarkup,
+        ) = termStrategy.strategyState();
+        assertEq(discountRateMarkup, 12345);
+    }
+
 
     function testRepoTokenValidationFailures() public {
         // start with some initial funds
@@ -382,7 +546,7 @@ contract TestUSDCSellRepoToken is Setup {
         termController.setOracleRate(repoToken1Week.termRepoId(), 0.05e18);     
         termController.setOracleRate(repoTokenMatured.termRepoId(), 0.05e18);     
 
-        vm.prank(management);
+        vm.prank(governor);
         termStrategy.setCollateralTokenParams(address(mockCollateral), 0);
 
         // test: min collateral ratio not set
@@ -390,7 +554,7 @@ contract TestUSDCSellRepoToken is Setup {
         vm.prank(testUser);
         termStrategy.sellRepoToken(address(repoToken1Week), 1e18);         
 
-        vm.startPrank(management);
+        vm.startPrank(governor);
         termStrategy.setCollateralTokenParams(address(mockCollateral), 0.5e18);
         termStrategy.setTimeToMaturityThreshold(3 weeks);
         vm.stopPrank();
@@ -406,7 +570,7 @@ contract TestUSDCSellRepoToken is Setup {
 
         (uint256 timeToMat, ,) = termStrategy.simulateTransaction(address(0), 0);
 
-        vm.prank(management);
+        vm.prank(governor);
         termStrategy.setTimeToMaturityThreshold(timeToMat);
 
         // test: can't sell 4 week repo token because of time to maturity threshold
@@ -543,14 +707,18 @@ contract TestUSDCSellRepoToken is Setup {
         IERC4626(address(termStrategy)).deposit(depositAmount, testDepositor);
         vm.stopPrank();
 
-        vm.expectRevert("!management");
+        vm.expectRevert();
         termStrategy.setRepoTokenConcentrationLimit(0.4e18);
 
         // Set to 40%
-        vm.prank(management);
+        vm.prank(governor);
         termStrategy.setRepoTokenConcentrationLimit(0.4e18);
 
         termController.setOracleRate(repoToken2Week.termRepoId(), 0.05e18); 
+
+        vm.expectRevert(abi.encodeWithSelector(RepoTokenList.InvalidRepoToken.selector, address(0)));
+        termStrategy.getRepoTokenConcentrationRatio(address(0));
+
 
         uint256 concentrationLimit = termStrategy.getRepoTokenConcentrationRatio(address(repoToken2Week));
 
@@ -567,10 +735,10 @@ contract TestUSDCSellRepoToken is Setup {
 
         mockUSDC.mint(testDepositor, depositAmount);
 
-        vm.expectRevert("!management");
+        vm.expectRevert();
         termStrategy.pauseStrategy();
 
-        vm.prank(management);
+        vm.prank(governor);
         termStrategy.pauseStrategy();
 
         vm.startPrank(testDepositor);
@@ -584,5 +752,11 @@ contract TestUSDCSellRepoToken is Setup {
             2e18,
             "Pausable: paused"
         );
+
+        vm.prank(governor);
+        termStrategy.unpauseStrategy();
+        vm.prank(testDepositor);
+        IERC4626(address(termStrategy)).deposit(depositAmount, testDepositor);
+        vm.stopPrank();
     }
 }

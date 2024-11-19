@@ -7,6 +7,7 @@ import {MockTermRepoLocker} from "./MockTermRepoLocker.sol";
 import {MockTermRepoToken} from "./MockTermRepoToken.sol";
 
 contract MockTermAuctionOfferLocker is ITermAuctionOfferLocker {
+    error OfferUnlockingFailed();
 
     address public purchaseToken;
     address public termRepoServicer;
@@ -14,11 +15,11 @@ contract MockTermAuctionOfferLocker is ITermAuctionOfferLocker {
     MockTermRepoLocker internal repoLocker;
     ITermAuction internal auction;
     mapping(bytes32 => TermAuctionOffer) internal lockedOffers;
-    
+
     constructor(
-        ITermAuction _auction, 
-        address _repoLocker, 
-        address _repoServicer, 
+        ITermAuction _auction,
+        address _repoLocker,
+        address _repoServicer,
         address _purchaseToken
     ) {
         auction = _auction;
@@ -77,7 +78,7 @@ contract MockTermAuctionOfferLocker is ITermAuctionOfferLocker {
                 offer.purchaseToken = submission.purchaseToken;
 
                 repoLocker.lockPurchaseTokens(msg.sender, offer.amount);
-            }            
+            }
             lockedOffers[offer.id] = offer;
             offerIds[i] = offer.id;
         }
@@ -99,5 +100,10 @@ contract MockTermAuctionOfferLocker is ITermAuctionOfferLocker {
             repoLocker.releasePurchaseTokens(msg.sender, lockedOffers[offerId].amount);
             delete lockedOffers[offerId];
         }
+    }
+
+    function unlockOfferPartial(bytes32 offerId, address offeror, uint256 amount) external {
+        delete lockedOffers[offerId];
+        repoLocker.releasePurchaseTokens(offeror, amount);
     }
 }
