@@ -1,6 +1,6 @@
 # Tokenized Strategy Mix for Yearn V3 strategies
 
-![CI](https://github.com/term-finance/yearn-v3-term-vault-contracts/actions/workflows/ci.yaml/badge.svg?branch=master)
+![CI](https://github.com/term-finance/yearn-v3-term-vault-contracts/actions/workflows/ci.yaml/badge.svg?branch=main) [![codecov](https://codecov.io/gh/term-finance/yearn-v3-term-vault-contracts/branch/main/graph/badge.svg?token=oTi51lUfIS)](https://codecov.io/gh/term-finance/yearn-v3-term-vault-contracts)
 
 This repo will allow you to write, test and deploy V3 "Tokenized Strategies" using [Foundry](https://book.getfoundry.sh/).
 
