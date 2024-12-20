@@ -177,7 +177,6 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
     ) external onlyRole(GOVERNOR_ROLE) {
         require(newTermControllerAddr != address(0));
         require(ITermController(newTermControllerAddr).getProtocolReserveAddress() != address(0));
-        ITermController newTermController = ITermController(newTermControllerAddr);
         address currentIteration = repoTokenListData.head;
         while (currentIteration != address(0)) {
             if (!_isTermDeployed(currentIteration)) {
@@ -191,7 +190,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
             newTermControllerAddr
         );
         strategyState.prevTermController = ITermController(current);
-        strategyState.currTermController = newTermController;
+        strategyState.currTermController = ITermController(newTermControllerAddr);
     }
 
     /**
@@ -577,10 +576,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
      * @dev This function aggregates the total liquid balance, the present value of all repoTokens,
      * and the present value of all pending offers to calculate the total asset value.
      */
-    function _totalAssetValue(uint256 liquidBalance) internal view returns (uint256 totalValue) {
-        ITermController prevTermController = strategyState.prevTermController;
-        ITermController currTermController = strategyState.currTermController;
-        
+    function _totalAssetValue(uint256 liquidBalance) internal view returns (uint256 totalValue) {        
         return
             liquidBalance +
             repoTokenListData.getPresentValue(
@@ -1087,7 +1083,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
         }
 
         // Validate and insert the repoToken into the list, retrieve auction rate and redemption timestamp
-        (bool isRepoTokenValid , , uint256 redemptionTimestamp) = repoTokenListData
+        (bool isRepoTokenValid , uint256 redemptionTimestamp) = repoTokenListData
             .validateAndInsertRepoToken(
                 ITermRepoToken(repoToken),
                 strategyState.discountRateAdapter,
