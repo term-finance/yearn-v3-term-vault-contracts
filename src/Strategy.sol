@@ -576,10 +576,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
      * @dev This function aggregates the total liquid balance, the present value of all repoTokens,
      * and the present value of all pending offers to calculate the total asset value.
      */
-    function _totalAssetValue(uint256 liquidBalance) internal view returns (uint256 totalValue) {
-        ITermController prevTermController = strategyState.prevTermController;
-        ITermController currTermController = strategyState.currTermController;
-        
+    function _totalAssetValue(uint256 liquidBalance) internal view returns (uint256 totalValue) {        
         return
             liquidBalance +
             repoTokenListData.getPresentValue(
