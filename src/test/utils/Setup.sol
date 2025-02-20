@@ -85,20 +85,26 @@ contract Setup is ExtendedTest, IEvents {
 
         // Factory from mainnet, tokenized strategy needs to be hardcoded to 0xBB51273D6c746910C7C06fe718f30c936170feD0
         tokenizedStrategy = new TokenizedStrategy(address(mockFactory));
-        vm.etch(0xBB51273D6c746910C7C06fe718f30c936170feD0, address(tokenizedStrategy).code);
+        vm.etch(
+            0xBB51273D6c746910C7C06fe718f30c936170feD0,
+            address(tokenizedStrategy).code
+        );
 
         termController = new MockTermController();
-        discountRateAdapter = new TermDiscountRateAdapter(address(termController), adminWallet);
+        discountRateAdapter = new TermDiscountRateAdapter(
+            address(termController),
+            adminWallet
+        );
         termVaultEventEmitterImpl = new TermVaultEventEmitter();
-        termVaultEventEmitter = TermVaultEventEmitter(address(new ERC1967Proxy(address(termVaultEventEmitterImpl), "")));
+        termVaultEventEmitter = TermVaultEventEmitter(
+            address(new ERC1967Proxy(address(termVaultEventEmitterImpl), ""))
+        );
         mockYearnVault = new ERC4626Mock(address(asset));
 
         termVaultEventEmitter.initialize(adminWallet, devopsWallet);
 
         // Deploy strategy and set variables
         strategy = IStrategyInterface(setUpStrategy());
-
-//        factory = strategy.FACTORY();
 
         // label all the used addresses for traces
         vm.label(keeper, "keeper");
@@ -108,13 +114,19 @@ contract Setup is ExtendedTest, IEvents {
         vm.label(governor, "governor");
         vm.label(address(strategy), "strategy");
         vm.label(performanceFeeRecipient, "performanceFeeRecipient");
+
+        vm.mockCall(
+            address(0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD),
+            abi.encodeWithSelector(0x03607ceb),
+            abi.encode(1000000002659864411854984565)
+        );
     }
 
     function setUpStrategy() public returns (address) {
         // we save the strategy as a IStrategyInterface to give it the needed interface
         IStrategyInterface _strategy = constructStrategy(
-            address(asset), 
-            address(mockYearnVault), 
+            address(asset),
+            address(mockYearnVault),
             address(discountRateAdapter),
             address(termVaultEventEmitter),
             governor,
@@ -139,7 +151,14 @@ contract Setup is ExtendedTest, IEvents {
         return address(_strategy);
     }
 
-    function constructStrategy(address asset, address mockYearnVault, address discountRateAdapter, address termVaultEventEmitter, address governor, address termController) internal returns (IStrategyInterface) {
+    function constructStrategy(
+        address asset,
+        address mockYearnVault,
+        address discountRateAdapter,
+        address termVaultEventEmitter,
+        address governor,
+        address termController
+    ) internal returns (IStrategyInterface) {
         Strategy.StrategyParams memory params = Strategy.StrategyParams(
             asset,
             mockYearnVault,
@@ -152,12 +171,8 @@ contract Setup is ExtendedTest, IEvents {
             0.2e18,
             0.005e18
         );
-        Strategy strat = new Strategy(
-                    "Tokenized Strategy", 
-                    "tS",
-                    params
-                );
-        
+        Strategy strat = new Strategy("Tokenized Strategy", "tS", params);
+
         return IStrategyInterface(address(strat));
     }
 
