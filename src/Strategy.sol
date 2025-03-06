@@ -12,6 +12,7 @@ import {ITermVaultEvents} from "./interfaces/term/ITermVaultEvents.sol";
 import {ITermAuctionOfferLocker} from "./interfaces/term/ITermAuctionOfferLocker.sol";
 import {ITermDiscountRateAdapter} from "./interfaces/term/ITermDiscountRateAdapter.sol";
 import {ITermAuction} from "./interfaces/term/ITermAuction.sol";
+import {IUsds} from "./interfaces/IUsds.sol";
 import {RepoTokenList, RepoTokenListData} from "./RepoTokenList.sol";
 import {TermAuctionList, TermAuctionListData, PendingOffer} from "./TermAuctionList.sol";
 import {RepoTokenUtils} from "./RepoTokenUtils.sol";
@@ -88,6 +89,8 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
     error AuctionNotOpen();
     error ZeroPurchaseTokenAmount();
     error OfferNotFound();
+    error OfferPriceLow();
+
 
     bytes32 internal constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
 
@@ -98,6 +101,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
 
     /// @notice State variables
     bool internal depositLock;
+    uint8 public variant = 1;
     address internal pendingGovernor;
 
     RepoTokenListData internal repoTokenListData;
@@ -426,7 +430,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
 
             
             
-            uint256 discountRate = strategyState.discountRateAdapter.getDiscountRate(repoToken);
+            uint256 discountRate = _getDiscountRate(repoToken);
             uint256 repoRedemptionHaircut = strategyState.discountRateAdapter.repoRedemptionHaircut(repoToken);
             repoTokenAmountInBaseAssetPrecision = RepoTokenUtils.getNormalizedRepoTokenAmount(
                 repoToken,
@@ -856,18 +860,20 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
      * @param termAuction The address of the term auction
      * @param repoToken The address of the repoToken
      * @param idHash The hash of the offer ID
-     * @param offerPriceHash The hash of the offer price
+     * @param offerPrice The price of the offer
+     * @param offerNonce Randomized nonce for offer
      * @param purchaseTokenAmount The amount of purchase tokens being offered
      * @return offerIds An array of offer IDs for the submitted offers
      *
      * @dev This function validates the underlying repoToken, checks concentration limits, ensures the auction is open,
-     * and rebalances liquidity to support the offer submission. It handles both new offers and edits to existing offers.    
+     * and rebalances liquidity to support the offer submission. It handles both new offers and edits to existing offers.
      */
     function submitAuctionOffer(
         ITermAuction termAuction,
         address repoToken,
         bytes32 idHash,
-        bytes32 offerPriceHash,
+        uint256 offerPrice,
+        uint256 offerNonce,
         uint256 purchaseTokenAmount
     )
         external
@@ -878,6 +884,10 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
     {
         if(purchaseTokenAmount == 0) {
             revert ZeroPurchaseTokenAmount();
+        }
+
+        if (offerPrice < _adjustedUsdsRate()) {
+            revert OfferPriceLow();
         }
 
         ITermAuctionOfferLocker offerLocker = _validateAndGetOfferLocker(
@@ -897,7 +907,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
         ITermAuctionOfferLocker.TermAuctionOfferSubmission memory offer;
         offer.id = idHash;
         offer.offeror = address(this);
-        offer.offerPriceHash = offerPriceHash;
+        offer.offerPriceHash = keccak256(abi.encode(offerPrice, offerNonce));
         offer.amount = purchaseTokenAmount;
         offer.purchaseToken = address(asset);
 
@@ -922,7 +932,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
             revert BalanceBelowRequiredReserveRatio();
         }
 
-        // Calculate the resulting weighted time to maturity            
+        // Calculate the resulting weighted time to maturity
         // Passing in 0 adjustment because offer and balance already updated
         uint256 resultingWeightedTimeToMaturity = _calculateWeightedMaturity(
             address(0),
@@ -938,6 +948,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
         // Passing in 0 amount and 0 liquid balance adjustment because offer and balance already updated
         _validateRepoTokenConcentration(repoToken, 0, totalAssetValue, 0);
     }
+
 
     /**
      * @dev Submits an offer to a term auction and locks it using the offer locker.
@@ -1103,8 +1114,6 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
         uint256 totalAssetValue = _totalAssetValue(liquidBalance);
         require(totalAssetValue > 0);
 
-        uint256 discountRate = strategyState.discountRateAdapter.getDiscountRate(repoToken);
-
         // Calculate the repoToken amount in base asset precision        
         uint256 repoTokenAmountInBaseAssetPrecision = RepoTokenUtils.getNormalizedRepoTokenAmount(
             repoToken,
@@ -1118,7 +1127,7 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
             repoTokenAmountInBaseAssetPrecision,
             PURCHASE_TOKEN_PRECISION,
             redemptionTimestamp,
-            discountRate + strategyState.discountRateMarkup
+            _getDiscountRate(repoToken) + strategyState.discountRateMarkup
         );
 
         // Ensure the liquid balance is sufficient to cover the proceeds
@@ -1195,6 +1204,44 @@ contract Strategy is BaseStrategy, Pausable, AccessControl {
         });
 
         _grantRole(GOVERNOR_ROLE, _params._governorAddress);
+    }
+
+    function _getDiscountRate(address repoToken) internal view returns (uint256) {
+        uint256 usdsRate = _adjustedUsdsRate();
+        uint256 discountRateAuction = strategyState.discountRateAdapter.getDiscountRate(repoToken);
+        return usdsRate > discountRateAuction ? usdsRate : discountRateAuction;
+    }
+
+   function _adjustedUsdsRate() internal view returns (uint256) {
+        uint256 ssrRate = IUsds(0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD).ssr();
+
+        return (_rpow(ssrRate, 31557600) - 1e27) * 36000/ (1e9*36525); // ssr raised to 365.25 days in seconds, scaled to 9 decimals and adjusted to 360 day Term APY
+    }
+
+    // Copied from https://github.com/makerdao/sdai/blob/e6f8cfa1d638b1ef1c6187a1d18f73b21d2754a2/src/SavingsDai.sol#L118
+    function _rpow(uint256 x, uint256 n) internal pure returns (uint256 z) {
+        assembly {
+            let RAY := exp(10,27)
+            switch x case 0 {switch n case 0 {z := RAY} default {z := 0}}
+            default {
+                switch mod(n, 2) case 0 { z := RAY } default { z := x }
+                let half := div(RAY, 2)  // for rounding.
+                for { n := div(n, 2) } n { n := div(n,2) } {
+                    let xx := mul(x, x)
+                    if iszero(eq(div(xx, x), x)) { revert(0,0) }
+                    let xxRound := add(xx, half)
+                    if lt(xxRound, xx) { revert(0,0) }
+                    x := div(xxRound, RAY)
+                    if mod(n,2) {
+                        let zx := mul(z, x)
+                        if and(iszero(iszero(x)), iszero(eq(div(zx, x), z))) { revert(0,0) }
+                        let zxRound := add(zx, half)
+                        if lt(zxRound, zx) { revert(0,0) }
+                        z := div(zxRound, RAY)
+                    }
+                }
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
