@@ -281,24 +281,36 @@ contract TestUSDCIntegration is Setup {
         assertEq(0, pendingOffers.length);
     }
 
-    function testFailedUnlockedOfferFromCancelledAuction() public {
+    function testCancelledAuctionWithFailedUnlock() public {
         address testUser = vm.addr(0x11111);
 
         vm.prank(management);
         bytes32[] memory offerIds = termStrategy.submitAuctionOffer(
-            repoToken1WeekAuction, address(repoToken1Week), bytes32("offer 1"), bytes32("test price"), 1e6
-        ); 
+            repoToken1WeekAuction,
+            address(repoToken1Week),
+            bytes32("offer 1"),
+            bytes32("test price"),
+            1e6
+        );
 
-        repoToken1WeekAuction.auctionCancelForWithdrawal();       
+        repoToken1WeekAuction.auctionCancelForWithdrawal();
 
         vm.startPrank(testUser);
         repoToken1Month.mint(testUser, 1000e18);
         repoToken1Month.approve(address(strategy), type(uint256).max);
-        vm.mockCall(repoToken1WeekAuction.termAuctionOfferLocker(), abi.encodeWithSelector(MockTermAuctionOfferLocker.unlockOffers.selector, offerIds), abi.encodeWithSelector(MockTermAuctionOfferLocker.OfferUnlockingFailed.selector));
+        vm.mockCallRevert(
+            repoToken1WeekAuction.termAuctionOfferLocker(),
+            abi.encodeWithSelector(
+                MockTermAuctionOfferLocker.unlockOffers.selector,
+                offerIds
+            ),
+            "OfferUnlockingFailed"
+        );
         termStrategy.sellRepoToken(address(repoToken1Month), 1e6);
         bytes32[] memory pendingOffers = termStrategy.pendingOffers();
         assertEq(1, pendingOffers.length);
     }
+
 
     function testRepoTokenBlacklist() public {
         address testUser = vm.addr(0x11111);  
